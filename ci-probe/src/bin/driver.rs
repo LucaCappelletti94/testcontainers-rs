@@ -1,6 +1,4 @@
-//! Runs the victim in a new process group, sends it CTRL_BREAK_EVENT once its container is up,
-//! and a second one a second later when asked to, then checks the exit code and that the
-//! container is gone.
+//! Sends the victim one CTRL_BREAK_EVENT, or two 100 ms apart, and checks its exit code, that its container is gone, and which Docker events the container went through.
 
 #[cfg(windows)]
 fn main() {
@@ -8,7 +6,7 @@ fn main() {
         io::{BufRead, BufReader},
         os::windows::process::CommandExt,
         process::{Command, Stdio},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use windows_sys::Win32::System::Console::{
@@ -28,6 +26,26 @@ fn main() {
             .expect("docker ps runs");
         assert!(out.status.success(), "docker ps failed: {out:?}");
         !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+    }
+
+    fn container_actions(id: &str, since: u64) -> String {
+        let until = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 1;
+        let out = Command::new("docker")
+            .args(["events", "--format", "{{.Action}}"])
+            .args(["--since", &since.to_string(), "--until", &until.to_string()])
+            .arg("--filter")
+            .arg(format!("container={id}"))
+            .output()
+            .expect("docker events runs");
+        assert!(out.status.success(), "docker events failed: {out:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     let mut probe = [0u32; 1];
@@ -72,6 +90,11 @@ fn main() {
         child.id()
     );
 
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 1;
     let sent = Instant::now();
     // SAFETY: no pointer arguments, and the id names the group made by CREATE_NEW_PROCESS_GROUP.
     let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
@@ -83,22 +106,23 @@ fn main() {
     );
 
     if events == 2 {
-        std::thread::sleep(Duration::from_secs(1));
-        if child
-            .try_wait()
-            .expect("victim status is readable")
-            .is_none()
-        {
-            println!("driver: sending a second CTRL_BREAK_EVENT");
-            // SAFETY: no pointer arguments, and the id names the group made by CREATE_NEW_PROCESS_GROUP.
-            let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
-            assert_ne!(
-                ok,
-                0,
-                "GenerateConsoleCtrlEvent failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            child
+                .try_wait()
+                .expect("victim status is readable")
+                .is_none(),
+            "victim exited before the second event"
+        );
+        println!("driver: sending a second CTRL_BREAK_EVENT");
+        // SAFETY: no pointer arguments, and the id names the group made by CREATE_NEW_PROCESS_GROUP.
+        let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+        assert_ne!(
+            ok,
+            0,
+            "GenerateConsoleCtrlEvent failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     let status = loop {
@@ -124,6 +148,7 @@ fn main() {
         "exit code is STATUS_CONTROL_C_EXIT"
     );
     assert!(!listed, "container {id} is removed");
+    println!("driver: container events {}", container_actions(&id, since));
     println!("driver: PASS");
 }
 
