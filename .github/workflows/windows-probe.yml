@@ -1,0 +1,57 @@
+name: Windows probe
+
+on:
+  push:
+    branches: [ci-probe/watchdog-windows]
+
+jobs:
+  clippy:
+    name: Clippy on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Clippy check
+        run: cargo clippy -p testcontainers --all-features --all-targets -- -D warnings
+
+  runtime:
+    name: Watchdog removes a Windows container on CTRL_BREAK_EVENT, once and twice
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ci-probe
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Docker engine
+        run: docker version
+      - name: Pull nanoserver
+        run: docker pull mcr.microsoft.com/windows/nanoserver:ltsc2025
+      - name: Build probe
+        working-directory: ci-probe
+        run: cargo build --bins
+      - name: One CTRL_BREAK_EVENT, graceful stop
+        working-directory: ci-probe
+        env:
+          PROBE_IMAGE: mcr.microsoft.com/windows/nanoserver:ltsc2025
+          PROBE_CMD: ping -n 600 127.0.0.1
+        run: cargo run --bin driver -- target\debug\victim.exe 1
+      - name: Two CTRL_BREAK_EVENTs, forced removal
+        working-directory: ci-probe
+        env:
+          PROBE_IMAGE: mcr.microsoft.com/windows/nanoserver:ltsc2025
+          PROBE_CMD: ping -n 600 127.0.0.1
+        run: cargo run --bin driver -- target\debug\victim.exe 2
+      - name: Containers left
+        if: always()
+        run: docker ps -a
