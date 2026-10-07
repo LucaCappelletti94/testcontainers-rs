@@ -64,7 +64,13 @@ where
             #[cfg(feature = "host-port-exposure")]
             host_port_exposure,
         );
+        let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
+        eprintln!("PROBE {} new {:.12}: constructed", ms(), container.id());
+        let host = container.get_host().await?;
+        eprintln!("PROBE {} new {:.12}: get_host done", ms(), container.id());
+        let _ = host;
         let state = ContainerState::from_container(&container).await?;
+        eprintln!("PROBE {} new {:.12}: state done", ms(), container.id());
         for cmd in container.image().exec_before_ready(state)? {
             container.exec(cmd).await?;
         }
@@ -98,21 +104,39 @@ where
             let mut logs = container.docker_client().logs(container.id(), true);
             let container_id = container.id().to_string();
             tokio::spawn(async move {
+                let ms = || {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                        % 1_000_000
+                };
+                eprintln!(
+                    "PROBE {} consumer {container_id:.12}: task polled first time",
+                    ms()
+                );
                 while let Some(result) = logs.next().await {
                     match result {
                         Ok(record) => {
+                            let text = String::from_utf8_lossy(record.bytes())
+                                .chars()
+                                .take(40)
+                                .collect::<String>();
+                            eprintln!("PROBE {} consumer {container_id:.12}: frame {text:?}", ms());
                             for consumer in &log_consumers {
                                 consumer.accept(&record).await;
                                 tokio::task::yield_now().await;
                             }
                         }
                         Err(err) => {
+                            eprintln!("PROBE {} consumer {container_id:.12}: error {err}", ms());
                             log::warn!(
                                 "Failed to read log frame for container {container_id}: {err}",
                             );
                         }
                     }
                 }
+                eprintln!("PROBE {} consumer {container_id:.12}: stream ended", ms());
             });
         }
 

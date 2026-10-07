@@ -1,0 +1,55 @@
+name: Log consumer hang probe
+
+on:
+  push:
+    branches: [ci-probe/log-consumer-hang]
+
+jobs:
+  probe:
+    name: nextest ${{ matrix.nextest }} copy ${{ matrix.copy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        nextest: ["0.9.140", "0.9.146"]
+        copy: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Enable Docker Remote API on Localhost
+        shell: bash
+        run: |
+          sudo mkdir -p /etc/systemd/system/docker.service.d/
+          sudo cp ./.github/docker.override.conf /etc/systemd/system/docker.service.d/override.conf
+          sudo systemctl daemon-reload
+          sudo systemctl restart docker
+      - uses: taiki-e/install-action@v2.87.22
+        with:
+          tool: cargo-nextest@${{ matrix.nextest }}
+      - name: Build
+        run: cargo nextest run -p testcontainers --no-run
+      - name: Stress the async runner tests
+        run: |
+          cargo nextest --version
+          cargo nextest run -p testcontainers --profile probe -E 'binary(async_runner)' --stress-duration 25m 2>&1 | tee probe.log || true
+      - name: Summary
+        if: always()
+        run: |
+          echo "nextest ${{ matrix.nextest }}"
+          echo "log consumer runs: $(grep -c 'PROBE-RESULT' probe.log || true)"
+          echo "before return: $(grep -c 'before-return' probe.log || true)"
+          echo "after return: $(grep -c 'after-return' probe.log || true)"
+          grep -oE 'after-return lag_ms=[0-9]+' probe.log | sort -t= -k2 -n | tail -n 5 || true
+          echo "timeouts: $(grep -cE '^\s*TIMEOUT' probe.log || true)"
+          grep -E '^\s*(TIMEOUT|FAIL)' probe.log | sort | uniq -c || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.nextest }}-${{ matrix.copy }}
+          path: probe.log

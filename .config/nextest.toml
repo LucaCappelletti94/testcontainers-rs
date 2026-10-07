@@ -1,3 +1,13 @@
 [profile.default]
 # Enable automatic retries for flaky tests with exponential backoff.
 retries = { backoff = "exponential", count = 2, delay = "1s" }
+
+[profile.probe]
+retries = 0
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[[profile.probe.overrides]]
+filter = "test(/async_run_with_log_consumer/)"
+success-output = "immediate"
+failure-output = "immediate"

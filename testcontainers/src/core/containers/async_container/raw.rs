@@ -252,10 +252,23 @@ impl RawContainer {
         log::debug!("Waiting for container {} to be ready", self.id);
         let id = self.id();
 
+        let ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                % 1_000_000
+        };
         for condition in ready_conditions {
+            let label = format!("{condition:?}")
+                .chars()
+                .take(60)
+                .collect::<String>();
+            eprintln!("PROBE {} ready {:.12}: waiting {label}", ms(), self.id);
             condition
                 .wait_until_ready(&self.docker_client, self)
                 .await?;
+            eprintln!("PROBE {} ready {:.12}: done {label}", ms(), self.id);
         }
 
         log::debug!("Container {id} is now ready!");

@@ -322,7 +322,50 @@ async fn async_run_with_log_consumer() -> anyhow::Result<()> {
         .with_log_consumer(LoggingConsumer::new().with_stderr_level(log::Level::Error))
         .start()
         .await?;
+    eprintln!(
+        "PROBE {} test: start returned, blocking on recv",
+        probe_ms()
+    );
     rx.recv()?; // notification from consumer
+    eprintln!("PROBE {} test: notified", probe_ms());
+    Ok(())
+}
+
+fn probe_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        % 1_000_000
+}
+
+#[tokio::test]
+async fn async_run_with_log_consumer_timed() -> anyhow::Result<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let _container = HelloWorld
+        .with_log_consumer(move |frame: &LogFrame| {
+            if String::from_utf8_lossy(frame.bytes()).contains("Hello from Docker!") {
+                let _ = tx.send(probe_ms());
+            }
+        })
+        .with_log_consumer(LoggingConsumer::new().with_stderr_level(log::Level::Error))
+        .start()
+        .await?;
+    let returned = probe_ms();
+    match rx.try_recv() {
+        Ok(at) => println!(
+            "PROBE-RESULT before-return lead_ms={}",
+            returned.saturating_sub(at)
+        ),
+        Err(_) => match tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
+            Ok(Some(at)) => println!(
+                "PROBE-RESULT after-return lag_ms={}",
+                at.saturating_sub(returned)
+            ),
+            Ok(None) => panic!("PROBE-RESULT consumer ended without the line"),
+            Err(_) => panic!("PROBE-RESULT consumer silent for 60s after start returned"),
+        },
+    }
     Ok(())
 }
 
